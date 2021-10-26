@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+
+import argparse
+import subprocess
+import re
+
+__author__ = 'Patrick St. Jean'
+__version__ = '0.0.1'
+
+PIHOLE_CMD = "/usr/local/bin/pihole"
+SUDO_CMD = "/usr/bin/sudo"
+
+EXIT_STATUS = {
+    0: "OK",
+    1: "WARNING",
+    2: "CRITICAL",
+    3: "UNKNOWN"
+}
+
+def parse_args():
+    argp = argparse.ArgumentParser(add_help=True,
+                                   description='Check Pi-hole',
+                                   epilog='{0}: v.{1} by {2}'.format('check_pihole.py', __version__, __author__))
+    argp.add_argument('-s', dest='use_sudo',
+                      help="Use sudo to run commands", action='store_true')
+    argp.set_defaults(use_sudo=False)
+    args = argp.parse_args()
+    return args
+
+def do_exit(exitcode, message=''):
+    if message:
+        print(''.join([EXIT_STATUS[exitcode], ":", " ", message]))
+    exit(exitcode)
+
+def check_pihole_status(use_sudo=False):
+    command = [PIHOLE_CMD, 'status']
+    if use_sudo:
+        command.insert(0, SUDO_CMD)
+
+    try:
+        result = subprocess.run(command, stdout=subprocess.PIPE)
+        output_text = result.stdout.decode('utf-8')
+        return 0, output_text
+    except Exception:
+        return 2, "Problems running '%s status'" % PIHOLE_CMD
+
+def check_pihole_version(use_sudo=False):
+    exit_code = 0
+    command = [PIHOLE_CMD, '-v']
+    if use_sudo:
+        command.insert(0, SUDO_CMD)
+
+    try:
+        result = subprocess.run(command, stdout=subprocess.PIPE)
+        output_text = result.stdout.decode('utf-8')
+    except Exception:
+        return 2, "Problems running '%s -v'" % PIHOLE_CMD
+
+    updates_needed = []
+
+    components_found = 0
+
+    for line in output_text.splitlines():
+        result = re.search(r'Usage: pihole', line)
+        if result:
+            break
+        result = re.search(r'(\S+) version is (\S+) \(Latest: (\S+)\)', line)
+        if result:
+            components_found += 1
+            component = result.group(1)
+            current_ver = result.group(2)
+            latest_ver = result.group(3)
+            if current_ver != latest_ver:
+                updates_needed.append(component)
+                exit_code = 2
+
+    if components_found != 3:
+        exit_code = 2
+        response = "Problems running '%s -v'" % PIHOLE_CMD
+    elif exit_code:
+        response = "Updates available for %s" % ', '.join(updates_needed)
+    else:
+        response = "No updates available"
+
+    return exit_code, response
+
+def main():
+    exitcode = 0
+    message = ""
+
+    args = parse_args()
+
+    check_exit, check_output = check_pihole_status(args.use_sudo)
+    version_exit, version_output = check_pihole_version(args.use_sudo)
+
+    if check_exit == 2:
+        exitcode = check_exit
+        message = check_output
+    else:
+        if re.findall(r'NOT listening', check_output):
+            message = "pihole-FTL is not listening"
+            exitcode = 2
+        elif re.findall(r'is disabled', check_output):
+            message = "pihole-FTL is disabled"
+            exitcode = 1
+        elif not re.findall(r'is listening', check_output):
+            message = "Problems running '%s status'" % PIHOLE_CMD
+            exitcode = 2
+        elif not re.findall(r'is enabled', check_output):
+            message = "Problems running '%s status'" % PIHOLE_CMD
+            exitcode = 2
+        elif version_exit:
+            message = version_output
+            exitcode = version_exit
+        else:
+            message = "Pi-hole is healthy"
+            exitcode = 0
+    do_exit(exitcode, message)
+
+if __name__ == '__main__':
+    main()
